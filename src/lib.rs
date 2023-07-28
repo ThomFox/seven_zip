@@ -51,6 +51,8 @@ unsafe fn lzma_stream_raw<R: Read + ?Sized, W: Write + ?Sized>(reader: &mut R, w
         unsafe { memmove(input.as_mut_ptr() as *mut c_void, (*stream).next_in as *const c_void, (*stream).avail_in as usize); }
     }
     loop {
+        (*stream).next_out = output.as_mut_ptr();
+        (*stream).avail_out = output.len();
         let result = unsafe { lzma_code(stream, LZMA_FINISH) };
         match result {
             LZMA_OK => {},
@@ -59,6 +61,7 @@ unsafe fn lzma_stream_raw<R: Read + ?Sized, W: Write + ?Sized>(reader: &mut R, w
             x => return Err(io::Error::new(ErrorKind::Other, format!("LZMA Error {x}")))
         }
         let output_count = unsafe { (*stream).next_out.offset_from(output.as_ptr()) } as usize;
+        if output_count == 0 { break; }
         writer.write_all(&output[0..output_count])?;
         unsafe { memmove(input.as_mut_ptr() as *mut c_void, (*stream).next_in as *const c_void, (*stream).avail_in as usize); }
         if result == LZMA_STREAM_END { break; }
