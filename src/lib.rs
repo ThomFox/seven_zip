@@ -63,7 +63,6 @@ unsafe fn lzma_stream_raw<R: Read + ?Sized, W: Write + ?Sized>(reader: &mut R, w
         let output_count = unsafe { (*stream).next_out.offset_from(output.as_ptr()) } as usize;
         if output_count == 0 { break; }
         writer.write_all(&output[0..output_count])?;
-        unsafe { memmove(input.as_mut_ptr() as *mut c_void, (*stream).next_in as *const c_void, (*stream).avail_in as usize); }
         if result == LZMA_STREAM_END { break; }
     }
     Ok(())
