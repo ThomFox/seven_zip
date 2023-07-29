@@ -47,7 +47,7 @@ unsafe fn lzma_stream_raw<R: Read + ?Sized, W: Write + ?Sized>(reader: &mut R, w
             x => return Err(io::Error::new(ErrorKind::Other, format!("LZMA Error {x}")))
         }
         let output_count = unsafe { (*stream).next_out.offset_from(output.as_ptr()) } as usize;
-        writer.write_all(&output[0..output_count])?;
+        writer.write(&output[0..output_count])?; // TODO: handle uncompressed length correctly
         unsafe { memmove(input.as_mut_ptr() as *mut c_void, (*stream).next_in as *const c_void, (*stream).avail_in as usize); }
     }
     loop {
@@ -62,7 +62,7 @@ unsafe fn lzma_stream_raw<R: Read + ?Sized, W: Write + ?Sized>(reader: &mut R, w
         }
         let output_count = unsafe { (*stream).next_out.offset_from(output.as_ptr()) } as usize;
         if output_count == 0 { break; }
-        writer.write_all(&output[0..output_count])?;
+        writer.write(&output[0..output_count])?; // TODO: handle uncompressed length correctly
         if result == LZMA_STREAM_END { break; }
     }
     Ok(())
@@ -124,15 +124,13 @@ struct LimitReader<'a> {
 
 impl Read for LimitReader<'_> {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        if buf.len() < self.left {
-            let count = self.reader.read(buf)?;
-            self.left -= count;
-            Ok(count)
+        let count = if buf.len() < self.left {
+            self.reader.read(buf)?
         } else {
-            let count = self.reader.read(&mut buf[0..self.left])?;
-            self.left -= count;
-            Ok(count)
-        }
+            self.reader.read(&mut buf[0..self.left])?
+        };
+        self.left -= count;
+        Ok(count)
     }
 }
 
@@ -140,6 +138,36 @@ impl<'a> LimitReader<'a> {
     fn new<R: Read + 'a>(reader: R, length: usize) -> Self {
         Self {
             reader: Box::new(reader) as Box<dyn Read>,
+            left: length
+        }
+    }
+}
+
+struct LimitWriter<'a> {
+    writer: Box<dyn Write + 'a>,
+    left: usize
+}
+
+impl<'a> Write for LimitWriter<'a> {
+    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
+        let count = if buf.len() < self.left {
+            self.writer.write_all(buf)?; buf.len() // hack: handling proper write here for now
+        } else {
+            self.writer.write_all(&buf[0..self.left])?; self.left // hack: handling proper write here for now
+        };
+        self.left -= count;
+        Ok(count)
+    }
+
+    fn flush(&mut self) -> io::Result<()> {
+        self.writer.flush()
+    }
+}
+
+impl<'a> LimitWriter<'a> {
+    fn new<W: Write + 'a>(writer: W, length: usize) -> Self {
+        Self {
+            writer: Box::new(writer) as Box<dyn Write>,
             left: length
         }
     }
@@ -160,10 +188,11 @@ pub fn lzma_decompress<R: Read + ?Sized, W: Write + ?Sized>(reader: &mut R, writ
     let mut uncompressed_length = [0;8];
     reader.read_exact(&mut uncompressed_length)?;
     let uncompressed_length = u64::from_le_bytes(uncompressed_length);
+    let mut writer = LimitWriter::new(writer, uncompressed_length as usize);
     let mut compressed_length = [0;8];
     reader.read_exact(&mut compressed_length)?;
     let compressed_length = u64::from_le_bytes(compressed_length);
     let mut reader = LimitReader::new(reader, compressed_length as usize);
-    lzma_decompress_raw(&mut reader, writer, filter.as_ptr())?;
+    lzma_decompress_raw(&mut reader, &mut writer, filter.as_ptr())?;
     Ok(())
 }
